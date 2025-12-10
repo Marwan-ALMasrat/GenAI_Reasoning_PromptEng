@@ -156,7 +156,7 @@ class NLPProcessor:
             return "neutral", 0.0
     
     def analyze_sentiment_batched(self, df: pd.DataFrame, text_column: str,
-                                  batch_size: int = 20, 
+                                  batch_size: int = 200, 
                                   progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """
         Analyze sentiment in batches for efficiency
