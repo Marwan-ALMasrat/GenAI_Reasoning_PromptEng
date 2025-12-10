@@ -246,7 +246,7 @@ elif page == "🧠 NLP Processing":
         with col1:
             st.markdown("### Processing Configuration")
         with col2:
-            batch_size = st.number_input("Batch Size", min_value=50, max_value=500, value=200, step=50)
+            batch_size = st.number_input("Batch Size", min_value=5, max_value=500, value=200, step=50)
         
         if st.button("🚀 Start NLP Processing", type="primary"):
             text_column = st.session_state.column_mapping['text_column']
