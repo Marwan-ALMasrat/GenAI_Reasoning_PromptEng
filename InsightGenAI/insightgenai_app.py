@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 # Add modules to path
-sys.path.append(str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from modules.data_loader import DataLoader
 from modules.data_analyzer import DataAnalyzer
