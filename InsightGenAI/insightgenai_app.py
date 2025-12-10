@@ -1,16 +1,302 @@
 import streamlit as st
 import pandas as pd
-from pathlib import Path
-import sys
+import numpy as np
+from typing import Dict, List, Any, Optional
+import plotly.express as px
+import plotly.graph_objects as go
+from collections import Counter
+import re
+import json
 
-# Add modules to path
-sys.path.insert(0, str(Path(__file__).parent))
+# ==================== DataLoader Class ====================
+class DataLoader:
+    """Handles data loading from various sources"""
+    
+    @staticmethod
+    def load_file(uploaded_file) -> Optional[pd.DataFrame]:
+        """Load data from uploaded file"""
+        try:
+            file_extension = uploaded_file.name.split('.')[-1].lower()
+            
+            if file_extension == 'csv':
+                return pd.read_csv(uploaded_file)
+            elif file_extension in ['xlsx', 'xls']:
+                return pd.read_excel(uploaded_file)
+            elif file_extension == 'json':
+                return pd.read_json(uploaded_file)
+            else:
+                st.error(f"Unsupported file format: {file_extension}")
+                return None
+        except Exception as e:
+            st.error(f"Error loading file: {str(e)}")
+            return None
+    
+    @staticmethod
+    def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+        """Automatically detect text, rating, and ID columns"""
+        column_mapping = {
+            'text_column': None,
+            'rating_column': None,
+            'id_column': None
+        }
+        
+        # Detect text column (longest average text length)
+        text_candidates = []
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                avg_length = df[col].astype(str).str.len().mean()
+                if avg_length > 20:
+                    text_candidates.append((col, avg_length))
+        
+        if text_candidates:
+            column_mapping['text_column'] = max(text_candidates, key=lambda x: x[1])[0]
+        
+        # Detect rating column
+        for col in df.columns:
+            if any(keyword in col.lower() for keyword in ['rating', 'score', 'stars', 'rate']):
+                column_mapping['rating_column'] = col
+                break
+        
+        # Detect ID column
+        for col in df.columns:
+            if any(keyword in col.lower() for keyword in ['id', 'index', 'key']):
+                column_mapping['id_column'] = col
+                break
+        
+        return column_mapping
 
-from modules.data_loader import DataLoader
-from modules.data_analyzer import DataAnalyzer
-from modules.nlp_processor import NLPProcessor
-from modules.genai_insights import GenAIInsights
-from modules.visualizer import Visualizer
+
+# ==================== DataAnalyzer Class ====================
+class DataAnalyzer:
+    """Performs statistical analysis on data"""
+    
+    def __init__(self, df: pd.DataFrame, column_mapping: Dict):
+        self.df = df
+        self.column_mapping = column_mapping
+    
+    def get_basic_stats(self) -> Dict[str, Any]:
+        """Get basic statistics"""
+        return {
+            'total_rows': len(self.df),
+            'total_columns': len(self.df.columns),
+            'missing_values': self.df.isnull().sum().sum(),
+            'duplicate_rows': self.df.duplicated().sum(),
+            'memory_usage': f"{self.df.memory_usage(deep=True).sum() / 1024**2:.2f} MB"
+        }
+
+
+# ==================== NLPProcessor Class ====================
+class NLPProcessor:
+    """Processes text data and performs sentiment analysis"""
+    
+    @staticmethod
+    def clean_text(text: str) -> str:
+        """Clean and normalize text"""
+        if pd.isna(text):
+            return ""
+        
+        text = str(text).lower()
+        text = re.sub(r'http\S+|www.\S+', '', text)
+        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    def clean_text_pipeline(self, df: pd.DataFrame, text_column: str) -> pd.DataFrame:
+        """Clean text column"""
+        df = df.copy()
+        df['clean_text'] = df[text_column].apply(self.clean_text)
+        return df
+    
+    @staticmethod
+    def simple_sentiment_analysis(text: str) -> tuple:
+        """Simple rule-based sentiment analysis"""
+        positive_words = ['good', 'great', 'excellent', 'amazing', 'wonderful', 'fantastic', 
+                         'love', 'best', 'perfect', 'awesome', 'brilliant', 'outstanding']
+        negative_words = ['bad', 'terrible', 'awful', 'horrible', 'worst', 'poor', 'hate',
+                         'disappointing', 'useless', 'waste', 'regret', 'never']
+        
+        text_lower = text.lower()
+        words = text_lower.split()
+        
+        positive_count = sum(1 for word in words if word in positive_words)
+        negative_count = sum(1 for word in words if word in negative_words)
+        
+        if positive_count > negative_count:
+            sentiment = 'positive'
+            score = min(0.5 + (positive_count * 0.1), 1.0)
+        elif negative_count > positive_count:
+            sentiment = 'negative'
+            score = max(0.5 - (negative_count * 0.1), 0.0)
+        else:
+            sentiment = 'neutral'
+            score = 0.5
+        
+        return sentiment, score
+    
+    def analyze_sentiment_batched(self, df: pd.DataFrame, text_column: str, 
+                                  batch_size: int = 200, progress_callback=None) -> pd.DataFrame:
+        """Analyze sentiment in batches"""
+        df = df.copy()
+        total_rows = len(df)
+        
+        sentiments = []
+        scores = []
+        
+        for i in range(0, total_rows, batch_size):
+            batch = df[text_column].iloc[i:i+batch_size]
+            
+            for text in batch:
+                sentiment, score = self.simple_sentiment_analysis(text)
+                sentiments.append(sentiment)
+                scores.append(score)
+            
+            if progress_callback:
+                progress = (i + batch_size) / total_rows
+                progress_callback(min(progress, 1.0))
+        
+        df['sentiment'] = sentiments
+        df['sentiment_score'] = scores
+        
+        return df
+
+
+# ==================== GenAIInsights Class ====================
+class GenAIInsights:
+    """Generates AI-powered insights"""
+    
+    def __init__(self):
+        self.api_key = None
+    
+    def set_api_key(self, api_key: str):
+        """Set API key for AI service"""
+        self.api_key = api_key
+    
+    def analyze_review_chain_of_thought(self, text: str, sentiment: str, 
+                                       confidence: float) -> Optional[Dict[str, str]]:
+        """Generate AI analysis using chain-of-thought reasoning"""
+        if not self.api_key:
+            return None
+        
+        # Simulated AI response (replace with actual API call)
+        analysis = f"""
+**Sentiment Analysis:** {sentiment.capitalize()} (Confidence: {confidence:.1%})
+
+**Key Observations:**
+- The review expresses {sentiment} sentiment
+- Confidence level indicates {'strong' if confidence > 0.7 else 'moderate'} certainty
+- Text length suggests {'detailed' if len(text) > 100 else 'brief'} feedback
+
+**Emotional Indicators:**
+- Tone: {'Enthusiastic' if sentiment == 'positive' else 'Critical' if sentiment == 'negative' else 'Balanced'}
+- Language intensity: {'High' if confidence > 0.8 else 'Medium' if confidence > 0.5 else 'Low'}
+"""
+
+        recommendations = f"""
+**Action Items:**
+1. {'Leverage this positive feedback in marketing' if sentiment == 'positive' else 'Address concerns raised immediately' if sentiment == 'negative' else 'Monitor for trends'}
+2. {'Consider featuring this testimonial' if sentiment == 'positive' else 'Investigate root cause' if sentiment == 'negative' else 'Gather more detailed feedback'}
+3. {'Share with product team for validation' if sentiment == 'positive' else 'Escalate to management' if sentiment == 'negative' else 'Continue monitoring'}
+
+**Priority Level:** {'Low' if sentiment == 'positive' else 'High' if sentiment == 'negative' else 'Medium'}
+"""
+        
+        return {
+            'analysis': analysis,
+            'recommendations': recommendations
+        }
+
+
+# ==================== Visualizer Class ====================
+class Visualizer:
+    """Creates visualizations for data insights"""
+    
+    @staticmethod
+    def plot_rating_distribution(df: pd.DataFrame, rating_column: str):
+        """Plot rating distribution"""
+        fig = px.histogram(df, x=rating_column, 
+                          title='Rating Distribution',
+                          labels={rating_column: 'Rating', 'count': 'Frequency'},
+                          color_discrete_sequence=['#667eea'])
+        fig.update_layout(bargap=0.1)
+        return fig
+    
+    @staticmethod
+    def plot_sentiment_distribution(df: pd.DataFrame):
+        """Plot sentiment distribution"""
+        sentiment_counts = df['sentiment'].value_counts()
+        
+        colors = {'positive': '#38ef7d', 'neutral': '#667eea', 'negative': '#f45c43'}
+        fig = go.Figure(data=[go.Pie(
+            labels=sentiment_counts.index,
+            values=sentiment_counts.values,
+            marker=dict(colors=[colors.get(s, '#666') for s in sentiment_counts.index]),
+            hole=0.4
+        )])
+        fig.update_layout(title='Sentiment Distribution')
+        return fig
+    
+    @staticmethod
+    def plot_sentiment_timeline(df: pd.DataFrame, date_column: str):
+        """Plot sentiment over time"""
+        df_copy = df.copy()
+        df_copy[date_column] = pd.to_datetime(df_copy[date_column], errors='coerce')
+        df_copy = df_copy.dropna(subset=[date_column])
+        
+        sentiment_over_time = df_copy.groupby([pd.Grouper(key=date_column, freq='D'), 'sentiment']).size().reset_index(name='count')
+        
+        fig = px.line(sentiment_over_time, x=date_column, y='count', color='sentiment',
+                     title='Sentiment Trends Over Time',
+                     color_discrete_map={'positive': '#38ef7d', 'neutral': '#667eea', 'negative': '#f45c43'})
+        return fig
+    
+    @staticmethod
+    def plot_rating_sentiment_heatmap(df: pd.DataFrame, rating_column: str):
+        """Plot rating vs sentiment heatmap"""
+        cross_tab = pd.crosstab(df[rating_column], df['sentiment'])
+        
+        fig = px.imshow(cross_tab, 
+                       title='Rating vs Sentiment Heatmap',
+                       labels=dict(x='Sentiment', y='Rating', color='Count'),
+                       color_continuous_scale='Blues')
+        return fig
+    
+    @staticmethod
+    def plot_sentiment_score_distribution(df: pd.DataFrame):
+        """Plot sentiment score distribution"""
+        fig = px.histogram(df, x='sentiment_score', color='sentiment',
+                          title='Sentiment Score Distribution',
+                          nbins=50,
+                          color_discrete_map={'positive': '#38ef7d', 'neutral': '#667eea', 'negative': '#f45c43'})
+        return fig
+    
+    @staticmethod
+    def generate_wordcloud(df: pd.DataFrame, text_column: str):
+        """Generate word cloud visualization"""
+        from io import BytesIO
+        import matplotlib.pyplot as plt
+        
+        try:
+            from wordcloud import WordCloud
+            
+            text = ' '.join(df[text_column].dropna().astype(str))
+            
+            wordcloud = WordCloud(width=400, height=300, 
+                                background_color='white',
+                                colormap='viridis').generate(text)
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.imshow(wordcloud, interpolation='bilinear')
+            ax.axis('off')
+            return fig
+        except ImportError:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.text(0.5, 0.5, 'WordCloud library not installed', 
+                   ha='center', va='center', fontsize=14)
+            ax.axis('off')
+            return fig
+
+
+# ==================== STREAMLIT APP ====================
 
 # Page configuration
 st.set_page_config(
@@ -142,7 +428,7 @@ if page == "📁 Data Upload":
                         st.info("ℹ️ No rating column found")
                 
                 with col3:
-                    st.markdown("**🏢 ID Column Detected:**")
+                    st.markdown("**🔢 ID Column Detected:**")
                     if column_mapping['id_column']:
                         st.success(f"✅ {column_mapping['id_column']}")
                     else:
@@ -437,18 +723,30 @@ elif page == "📈 Visualizations":
         
         with col1:
             st.markdown("#### Positive Reviews")
-            fig5 = visualizer.generate_wordcloud(df[df['sentiment'] == 'positive'], 'clean_text')
-            st.pyplot(fig5)
+            positive_data = df[df['sentiment'] == 'positive']
+            if len(positive_data) > 0:
+                fig5 = visualizer.generate_wordcloud(positive_data, 'clean_text')
+                st.pyplot(fig5)
+            else:
+                st.info("No positive reviews available")
         
         with col2:
             st.markdown("#### Neutral Reviews")
-            fig6 = visualizer.generate_wordcloud(df[df['sentiment'] == 'neutral'], 'clean_text')
-            st.pyplot(fig6)
+            neutral_data = df[df['sentiment'] == 'neutral']
+            if len(neutral_data) > 0:
+                fig6 = visualizer.generate_wordcloud(neutral_data, 'clean_text')
+                st.pyplot(fig6)
+            else:
+                st.info("No neutral reviews available")
         
         with col3:
             st.markdown("#### Negative Reviews")
-            fig7 = visualizer.generate_wordcloud(df[df['sentiment'] == 'negative'], 'clean_text')
-            st.pyplot(fig7)
+            negative_data = df[df['sentiment'] == 'negative']
+            if len(negative_data) > 0:
+                fig7 = visualizer.generate_wordcloud(negative_data, 'clean_text')
+                st.pyplot(fig7)
+            else:
+                st.info("No negative reviews available")
 
 # Footer
 st.markdown("---")
